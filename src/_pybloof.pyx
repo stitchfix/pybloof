@@ -8,6 +8,8 @@ import base64
 
 from libc.string cimport memcpy
 
+cdef unsigned int high = 0xFFFFFFFF
+
 cdef array.array char_array_template = array.array('b', [])
 
 cdef extern from "MurmurHash3.h" nogil:
@@ -47,16 +49,20 @@ cdef void _get_hash_buckets(key, unsigned long long * _bucket_indexes, unsigned 
     for i in range(hash_count):
         _bucket_indexes[i] = llabs((hash1 + i * hash2) % max)\
 
+
+
 @cython.boundscheck(False)
-cdef void _get_hash_buckets_for_long(long long key, unsigned long long * _bucket_indexes, unsigned int hash_count,
+@cython.cdivision(True)
+cdef inline void _get_hash_buckets_for_long(long long key, unsigned long long * _bucket_indexes, unsigned int hash_count,
                                      unsigned long max):
     cdef unsigned long result[2]
     cdef unsigned long hash1, hash2
     cdef unsigned long i
 
+
     MurmurHash3_x64_128_long(key, 0, &result)
     hash1 = result[0]
-    MurmurHash3_x64_128_long(key, result[1] & 0xFFFFFFFF, result)
+    MurmurHash3_x64_128_long(key, result[1] & high, result)
     hash2 = result[0]
 
     for i in range(hash_count):
@@ -66,6 +72,28 @@ cdef void _get_hash_buckets_for_long(long long key, unsigned long long * _bucket
 cdef char* fmt = '!III'
 cdef ssize_t header_size = sizeof(unsigned int) * 3
 DEF MAX_HASHES = 32
+
+
+@cython.boundscheck(False)
+cdef void _contains_range(unsigned int start, unsigned int stop, int[:] bitarray,
+                     unsigned long long * _bucket_indexes, unsigned int size,
+                     unsigned int hash_count, int[:] flags):
+    cdef unsigned int i
+    cdef unsigned int bucket_index
+    cdef unsigned int idx
+    cdef unsigned int bit
+    cdef int is_in
+    idx = 0
+    for item in range(start, stop):
+        is_in = 1
+        _get_hash_buckets_for_long(item, _bucket_indexes, hash_count, size)
+        for i in range(hash_count):
+            if not bitarray[_bucket_indexes[i]]:
+                is_in = 0
+                break
+        flags[idx] = is_in
+        idx += 1
+
 
 cdef class _BloomFilter:
     cdef unsigned int _size
@@ -213,8 +241,32 @@ cdef class UIntBloomFilter(_BloomFilter):
 
         return True
 
+    @cython.boundscheck(False)
+    cdef _contains_range(self, unsigned int start, unsigned int stop):
+        cdef unsigned long long _bucket_indexes[MAX_HASHES]
+        cdef unsigned int i
+        cdef unsigned int bucket_index
+        cdef unsigned int idx
+        cdef unsigned int bit
+        cdef int is_in
+        cdef array.array flags = array.array('i', [stop - start])
+        array.resize(flags, stop - start)
+        cdef array.array bitarray = array.array('i', [self._size])
+        array.resize(bitarray, self._size)
+        byte = self._bitarray.unpack()
+        for idx in range(self._size):
+            bitarray[idx] = byte[idx] == b'\xff'
+        _contains_range(start, stop, bitarray, _bucket_indexes, self._size,
+                        self._hashes, flags)
+        return flags
+
     def __contains__(self, unsigned int item):
         return self.contains(item)
+
+    def contains_range(self, start, stop):
+        flags = self._contains_range(start, stop)
+        return list(flags)
+
 
 cdef class StringBloomFilter(_BloomFilter):
     cpdef add(self, item):

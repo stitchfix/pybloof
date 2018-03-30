@@ -22,7 +22,7 @@ ext_modules = [
 
 setup(
     name='pybloof',
-    version='0.7.1',
+    version='0.7.2',
     author='Jake Heinz',
     author_email='me@jh.gg',
     url="http://github.com/jhgg/pybloof",
