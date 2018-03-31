@@ -75,15 +75,17 @@ DEF MAX_HASHES = 32
 
 
 @cython.boundscheck(False)
-cdef void _contains_range(unsigned int start, unsigned int stop, int[:] bitarray,
-                     unsigned long long * _bucket_indexes, unsigned int size,
-                     unsigned int hash_count, int[:] flags):
+cdef int _uniques_in_range(unsigned int start, unsigned int stop, int[:] bitarray,
+                           unsigned long long * _bucket_indexes, unsigned int size,
+                           unsigned int hash_count, int[:] flags, int[:] uniques):
     cdef unsigned int i
     cdef unsigned int bucket_index
     cdef unsigned int idx
     cdef unsigned int bit
+    cdef unsigned int off
     cdef int is_in
     idx = 0
+    off = 0
     for item in range(start, stop):
         is_in = 1
         _get_hash_buckets_for_long(item, _bucket_indexes, hash_count, size)
@@ -92,7 +94,11 @@ cdef void _contains_range(unsigned int start, unsigned int stop, int[:] bitarray
                 is_in = 0
                 break
         flags[idx] = is_in
+        if is_in:
+            uniques[off] = item
+            off += 1
         idx += 1
+    return off
 
 
 cdef class _BloomFilter:
@@ -242,7 +248,7 @@ cdef class UIntBloomFilter(_BloomFilter):
         return True
 
     @cython.boundscheck(False)
-    cdef _contains_range(self, unsigned int start, unsigned int stop):
+    cdef _uniques_in_range(self, unsigned int start, unsigned int stop):
         cdef unsigned long long _bucket_indexes[MAX_HASHES]
         cdef unsigned int i
         cdef unsigned int bucket_index
@@ -251,21 +257,23 @@ cdef class UIntBloomFilter(_BloomFilter):
         cdef int is_in
         cdef array.array flags = array.array('i', [stop - start])
         array.resize(flags, stop - start)
+        cdef array.array uniq = array.array('i', [stop - start])
+        array.resize(uniq, stop - start)
         cdef array.array bitarray = array.array('i', [self._size])
         array.resize(bitarray, self._size)
         byte = self._bitarray.unpack()
         for idx in range(self._size):
-            bitarray[idx] = byte[idx] == b'\xff'
-        _contains_range(start, stop, bitarray, _bucket_indexes, self._size,
-                        self._hashes, flags)
-        return flags
+            bitarray[idx] = byte[idx] == 255
+        off = _uniques_in_range(start, stop, bitarray, _bucket_indexes,
+                                self._size, self._hashes, flags, uniq)
+        return flags, uniq, off
 
     def __contains__(self, unsigned int item):
         return self.contains(item)
 
-    def contains_range(self, start, stop):
-        flags = self._contains_range(start, stop)
-        return list(flags)
+    def uniques_in_range(self, start, stop):
+        flags, uniq, off = self._uniques_in_range(start, stop)
+        return list(flags), set(uniq[:off])
 
 
 cdef class StringBloomFilter(_BloomFilter):
